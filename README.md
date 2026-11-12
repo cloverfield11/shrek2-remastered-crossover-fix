@@ -1,12 +1,12 @@
 # DreamWorks Shrek 2 Remastered — CrossOver / Wine `GameInput.dll` Fix
 
-Фикс запуска **DreamWorks Shrek 2 Remastered** в **CrossOver / Wine / Proton** (macOS / Linux) с полной поддержкой **геймпадов и вибрации**.
+Fixes the startup crash of **DreamWorks Shrek 2 Remastered** under **CrossOver / Wine / Proton** (macOS / Linux) with full **gamepad and rumble support**.
 
 ---
 
-## В чём причина краша
+## Root Cause
 
-При запуске в CrossOver игра успешно инициализирует Direct3D 12 (через D3DMetal), но сразу после этого падает с окном **BugSplat** и логом в `logs/Shrek-*.log`:
+On CrossOver / Wine, the game initializes Direct3D 12 (via D3DMetal) successfully, then immediately crashes with a **BugSplat** dialog and the following trace in `logs/Shrek-*.log`:
 
 ```text
 GAME CRASH
@@ -15,89 +15,92 @@ Address: 00000001402FAF11
 W:\BuildAgent\work\swamp2_p4\Code\LuxEngine2\Input\Win64\LuxWindowsPlatformInput.cpp(40): Lux::Input::LuxWindowsPlatformInput::LuxWindowsPlatformInput
 ```
 
-**Причина:**
-1. Игра использует новый API ввода Microsoft **GameInput v1** (`GameInputCreate` из `GameInput.dll`).
-2. Встроенная в Wine / CrossOver библиотека `gameinput.dll` является заглушкой и возвращает `0x80004001` (`E_NOTIMPL`).
-3. `Shrek.exe` пропускает получение интерфейса `IGameInput`, оставляя указатель равным `NULL`, но сразу после этого вызывает `IGameInput::SetFocusPolicy` без проверки на `NULL` → `0xC0000005` (Access Violation).
+**Why this happens:**
+1. The game uses Microsoft's **GameInput v1** API (`GameInputCreate` from `GameInput.dll`).
+2. Wine / CrossOver ships a stub `gameinput.dll` whose `GameInputCreate` returns `0x80004001` (`E_NOTIMPL`).
+3. `Shrek.exe` skips `QueryInterface` when `GameInputCreate` fails, leaving its `IGameInput*` pointer as `NULL`, and then immediately calls `IGameInput::SetFocusPolicy` without a null check → `0xC0000005` (Access Violation).
 
 ---
 
-## Как работает этот фикс
+## How This Fix Works
 
-Вместо модификации `Shrek.exe` в папку с игрой добавляется легковесная нативная прослойка **`GameInput.dll`** (~7 КБ, зависит только от `KERNEL32.dll`), которая:
-- Реализует используемые игрой методы **GameInput v1** (`GameInputCreate`, `IGameInput`, `IGameInputDevice`, `IGameInputReading`).
-- Транслирует состояние геймпадов (кнопки, D-Pad, оба стика, триггеры LT/RT), горячее подключение до 4 контроллеров и вибрацию (`SetRumbleState`) в стандартный **`XINPUT1_4.dll`**, который отлично работает в CrossOver / Wine / Proton.
-- Сохраняет стандартную работу клавиатуры и мыши (они в игре работают через Win32 API).
+Instead of patching `Shrek.exe`, this repository provides a lightweight native **`GameInput.dll`** shim (~7 KB, depends only on `KERNEL32.dll`) that:
+- Implements the **GameInput v1** COM interfaces used by the game (`GameInputCreate`, `IGameInput`, `IGameInputDevice`, `IGameInputReading`).
+- Translates gamepad input (buttons, D-Pad, left/right thumbsticks, LT/RT triggers), hot-plugging for up to 4 controllers, and vibration (`SetRumbleState`) to standard **`XINPUT1_4.dll`**, which works out of the box in CrossOver / Wine / Proton.
+- Preserves standard keyboard and mouse input (handled via Win32 APIs).
 
-> Примечание: геймпад определяется как контроллер Xbox (`vendorId = 0x045E`), поэтому подсказки кнопок в интерфейсе игры будут в стиле Xbox.
+> Note: Virtual controllers report an Xbox `vendorId` (`0x045E`), so in-game button prompts will display Xbox icons.
 
 ---
 
-## Быстрая установка
+## Installation
 
-### 1. Скопируйте `GameInput.dll` к игре
-Возьмите готовый файл [`bin/GameInput.dll`](bin/GameInput.dll) (или скачайте его из раздела **Releases**) и положите его в папку с игрой **рядом с `Shrek.exe`**, например:
+### 1. Place `GameInput.dll` next to `Shrek.exe`
+Download [`bin/GameInput.dll`](bin/GameInput.dll) (or grab it from the [Releases](https://github.com/cloverfield11/shrek2-remastered-crossover-fix/releases) page) and copy it into the game's directory alongside `Shrek.exe`, for example:
+
 ```text
 drive_c/Games/DreamWorks Shrek 2 Remastered/GameInput.dll
 ```
 
-### 2. Включите DLL override для `gameinput`
-Без этого Wine загрузит свою встроенную заглушку из `system32` вместо файла в папке с игрой.
+### 2. Enable the `gameinput` DLL override
+Without a DLL override, Wine will load its built-in stub from `system32` instead of the `GameInput.dll` next to `Shrek.exe`.
 
-#### Вариант А: Через интерфейс CrossOver (`winecfg`)
-1. Выберите вашу бутылку в CrossOver и нажмите **Run Command...** (Выполнить команду) или откройте **Wine Configuration** (`winecfg`).
-2. Перейдите на вкладку **Libraries** (Библиотеки).
-   *(Опционально: на вкладке **Applications** можно сначала добавить `Shrek.exe`, чтобы правило применялось только к игре.)*
-3. В поле **New override for library** введите:
+#### Option A: CrossOver GUI (`winecfg`)
+1. Select your bottle in CrossOver and open **Wine Configuration** (`winecfg`).
+2. Go to the **Libraries** tab.
+   *(Optional: on the **Applications** tab, add `Shrek.exe` first if you want this override to apply only to the game.)*
+3. In **New override for library**, type:
    ```text
    gameinput
    ```
-4. Нажмите **Add** (Добавить) и убедитесь, что стоит режим **`(native, builtin)`** (Сначала сторонняя, потом встроенная).
-5. Нажмите **Apply** → **OK**.
+4. Click **Add** and verify it is set to **`(native, builtin)`**.
+5. Click **Apply** → **OK**.
 
-#### Вариант Б: Через терминал macOS (для CrossOver)
-Подставьте имя вашей бутылки вместо `1243` (и путь к `CrossOver.app` вместо `CrossOver Preview.app`, если используете обычный CrossOver):
+#### Option B: macOS Terminal (CrossOver)
+Replace `"1243"` with your bottle name (and adjust the `.app` path if you use standard `CrossOver.app` instead of `CrossOver Preview.app`):
+
 ```bash
 "/Applications/CrossOver Preview.app/Contents/SharedSupport/CrossOver/bin/wine" --bottle "1243" reg add "HKCU\\Software\\Wine\\AppDefaults\\Shrek.exe\\DllOverrides" /v gameinput /t REG_SZ /d "native,builtin" /f
 ```
 
-#### Вариант В: Steam / Proton (Linux / Steam Deck)
-В свойствах игры в Steam → **Параметры запуска** укажите:
+#### Option C: Steam / Proton (Linux / Steam Deck)
+Set the game's **Launch Options** in Steam to:
+
 ```text
 WINEDLLOVERRIDES="gameinput=n,b" %command%
 ```
 
 ---
 
-## Сборка из исходников
+## Building from Source
 
-Для сборки понадобится `mingw-w64` (`x86_64-w64-mingw32-gcc`).
+Requires `mingw-w64` (`x86_64-w64-mingw32-gcc`).
 
-На macOS через Homebrew:
+On macOS (Homebrew):
 ```bash
 brew install mingw-w64
 ./build.sh
 ```
 
-На Linux (Debian/Ubuntu):
+On Linux (Debian/Ubuntu):
 ```bash
 sudo apt install gcc-mingw-w64-x86-64
 ./build.sh
 ```
 
-После сборки готовый файл появится в `bin/GameInput.dll`.
+The compiled DLL will be output to `bin/GameInput.dll`.
 
 ---
 
-## Структура репозитория
+## Repository Structure
 
-- `src/gameinput_shim.c` — реализация `GameInput v1` поверх `XInput`
-- `src/gameinput.def` — таблица экспортов (`GameInputCreate @1`)
-- `build.sh` — скрипт сборки через `x86_64-w64-mingw32-gcc`
-- `bin/GameInput.dll` — скомпилированная 64-битная DLL
+- `src/gameinput_shim.c` — `GameInput v1` to `XInput` shim implementation
+- `src/gameinput.def` — DLL export definitions (`GameInputCreate @1`)
+- `build.sh` — build script using `x86_64-w64-mingw32-gcc`
+- `bin/GameInput.dll` — prebuilt 64-bit DLL
 
 ---
 
-## Лицензия
+## License
 
-MIT License — см. [LICENSE](LICENSE).
+MIT License — see [LICENSE](LICENSE).
